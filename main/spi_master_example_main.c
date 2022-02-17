@@ -14,8 +14,7 @@
 #include "esp_system.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
-
-#include "pretty_effect.h"
+#include "mlx90640_ui.h"
 
 /*
  This code displays some fancy graphics on the 320x240 LCD on an ESP-WROVER_KIT board.
@@ -377,9 +376,36 @@ static void send_line_finish(spi_device_handle_t spi)
 }
 
 
-//Simple routine to generate some patterns and send them to the LCD. Don't expect anything too
-//impressive. Because the SPI driver handles transactions in the background, we can calculate the next line
-//while the previous one is being sent.
+
+uint16_t cvtColor_888_to_565(const thermal_color_t *pixel)
+{
+
+    uint16_t v = 0;
+    v |= ((pixel->r >> 3) << 11);
+    v |= ((pixel->g >> 2) << 5);
+    v |= ((pixel->b >> 3) << 0);
+    //The LCD wants the 16-bit value in big-endian, so swap bytes
+    v = (v >> 8) | (v << 8);
+    return v;
+}
+
+void Interpolate(const thermal_color_image_t source,int i_width, int i_height,uint16_t *dest, int curYPos, int numLines, int f_width, int f_height)
+{
+    int xScale = f_width/i_width;
+    int yScale = f_height/i_height;
+
+    for (int y=0;y<numLines;y++)
+    {
+        for (int x=0;x<320;x++)
+        {
+            int fpos = y*320+x;
+            int ipos = y/yScale*MLX90640_SENSOR_W + x/xScale;
+            dest[fpos] = cvtColor_888_to_565(&source[ipos]);
+        }
+    }
+ //yp = y0 + ((y1-y0)/(x1-x0)) * (xp - x0);
+}
+
 static void display_pretty_colors(spi_device_handle_t spi)
 {
     uint16_t *lines[2];
@@ -392,12 +418,19 @@ static void display_pretty_colors(spi_device_handle_t spi)
     //Indexes of the line currently being sent to the LCD and the line we're calculating.
     int sending_line=-1;
     int calc_line=0;
-
+    thermal_image_t img;
+thermal_color_image_t colorImage;
     while(1) {
         frame++;
+        thermal_getframe(img);
+        thermal_colorImage(img, colorImage);
+        // interpolate frame
         for (int y=0; y<240; y+=PARALLEL_LINES) {
+            
+
+            Interpolate(colorImage,MLX90640_SENSOR_W, MLX90640_SENSOR_H,lines[calc_line], y,PARALLEL_LINES,320, 240);
             //Calculate a line.
-            pretty_effect_calc_lines(lines[calc_line], y, frame, PARALLEL_LINES);
+            //pretty_effect_calc_lines(lines[calc_line], y, frame, PARALLEL_LINES);
             //Finish up the sending process of the previous line, if any
             if (sending_line!=-1) send_line_finish(spi);
             //Swap sending_line and calc_line
@@ -444,9 +477,7 @@ void app_main(void)
     //Initialize the LCD
     lcd_init(spi);
     //Initialize the effect displayed
-    ret=pretty_effect_init();
-    ESP_ERROR_CHECK(ret);
-
+    thermal_init();
     //Go do nice stuff.
     display_pretty_colors(spi);
 }

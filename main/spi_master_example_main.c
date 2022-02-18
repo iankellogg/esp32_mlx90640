@@ -13,6 +13,8 @@
 #include "freertos/task.h"
 #include "esp_system.h"
 #include "driver/spi_master.h"
+#include <esp_err.h>
+#include <esp_log.h>
 #include "driver/gpio.h"
 #include "mlx90640_ui.h"
 
@@ -64,7 +66,7 @@
 
 //To speed up transfers, every SPI transfer sends a bunch of lines. This define specifies how many. More means more memory use,
 //but less overhead for setting up / finishing transfers. Make sure 240 is dividable by this.
-#define PARALLEL_LINES 16
+#define PARALLEL_LINES 24
 
 /*
  The LCD needs a bunch of command/argument values to be initialized. They are stored in this struct.
@@ -393,57 +395,92 @@ void Interpolate(const thermal_color_image_t source,int i_width, int i_height,ui
 {
     int xScale = f_width/i_width;
     int yScale = f_height/i_height;
-
+    int old=92341234;
+    //printf("Y: %d\r\n",curYPos);
     for (int y=0;y<numLines;y++)
     {
         for (int x=0;x<320;x++)
         {
-            int fpos = y*320+x;
-            int ipos = y/yScale*MLX90640_SENSOR_W + x/xScale;
+            int fpos = (y)*320+x;
+             int ipos = (MLX90640_SENSOR_H-((y+curYPos)/yScale))*MLX90640_SENSOR_W + x/xScale;
+           // int ipos = ((y+curYPos)%MLX90640_SENSOR_H)*MLX90640_SENSOR_W+x%MLX90640_SENSOR_W;
+            // if (ipos!=old)
+            // {
+            //     old=ipos;
+            // printf("i pos %d: %dy %dx\r\n",ipos,(y+curYPos)/yScale,x/xScale);
+            // }
             dest[fpos] = cvtColor_888_to_565(&source[ipos]);
         }
     }
  //yp = y0 + ((y1-y0)/(x1-x0)) * (xp - x0);
 }
 
-static void display_pretty_colors(spi_device_handle_t spi)
+static void display_pretty_colors(void *params)
 {
+    spi_device_handle_t spi = (spi_device_handle_t)params;
     uint16_t *lines[2];
     //Allocate memory for the pixel buffers
     for (int i=0; i<2; i++) {
         lines[i]=heap_caps_malloc(320*PARALLEL_LINES*sizeof(uint16_t), MALLOC_CAP_DMA);
-        assert(lines[i]!=NULL);
+       if (lines[i]==NULL)
+       {
+           
+           return;
+       }
     }
     int frame=0;
     //Indexes of the line currently being sent to the LCD and the line we're calculating.
     int sending_line=-1;
     int calc_line=0;
+    uint32_t frameCount=0,bufferCount=0;
     thermal_image_t img;
 thermal_color_image_t colorImage;
+    //Initialize the effect displayed
+    thermal_init();
     while(1) {
         frame++;
-        thermal_getframe(img);
-        thermal_colorImage(img, colorImage);
-        // interpolate frame
-        for (int y=0; y<240; y+=PARALLEL_LINES) {
+        //printf("Frame %d\r\n",frame);
+        
+        bufferCount=thermal_getframe(img,frameCount);
+        if (bufferCount!=frameCount)
+        {
+            //printf("Draw Frame %d\r\n",bufferCount);
+            frameCount=bufferCount;
+            thermal_colorImage(img, colorImage);
+            // interpolate frame
+            for (int y=0; y<240; y+=PARALLEL_LINES) {
             
-
-            Interpolate(colorImage,MLX90640_SENSOR_W, MLX90640_SENSOR_H,lines[calc_line], y,PARALLEL_LINES,320, 240);
-            //Calculate a line.
-            //pretty_effect_calc_lines(lines[calc_line], y, frame, PARALLEL_LINES);
-            //Finish up the sending process of the previous line, if any
-            if (sending_line!=-1) send_line_finish(spi);
-            //Swap sending_line and calc_line
-            sending_line=calc_line;
-            calc_line=(calc_line==1)?0:1;
-            //Send the line we currently calculated.
-            send_lines(spi, y, lines[sending_line]);
-            //The line set is queued up for sending now; the actual sending happens in the
-            //background. We can go on to calculate the next line set as long as we do not
-            //touch line[sending_line]; the SPI sending process is still reading from that.
+                Interpolate(colorImage,MLX90640_SENSOR_W, MLX90640_SENSOR_H,lines[calc_line], y,PARALLEL_LINES,320, 240);
+                //Calculate a line.
+                //pretty_effect_calc_lines(lines[calc_line], y, frame, PARALLEL_LINES);
+                //Finish up the sending process of the previous line, if any
+                if (sending_line!=-1) send_line_finish(spi);
+                //Swap sending_line and calc_line
+                sending_line=calc_line;
+                calc_line=(calc_line==1)?0:1;
+                //Send the line we currently calculated.
+                send_lines(spi, y, lines[sending_line]);
+                //The line set is queued up for sending now; the actual sending happens in the
+                //background. We can go on to calculate the next line set as long as we do not
+                //touch line[sending_line]; the SPI sending process is still reading from that.
+            }
+        } 
+        else
+        {
+            printf("Sleeping\r\n");
+            vTaskDelay(10/portTICK_PERIOD_MS);
         }
     }
 }
+#define LCDTASKSIZE 16000
+
+/* Structure that will hold the TCB of the task being created. */
+StaticTask_t xLCDTaskBuffer;
+
+/* Buffer that the task being created will use as its stack.  Note this is
+an array of StackType_t variables.  The size of StackType_t is dependent on
+the RTOS port. */
+StackType_t xLCDTaskStack[ LCDTASKSIZE ];
 
 void app_main(void)
 {
@@ -476,8 +513,8 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
     //Initialize the LCD
     lcd_init(spi);
-    //Initialize the effect displayed
-    thermal_init();
     //Go do nice stuff.
-    display_pretty_colors(spi);
+  //  display_pretty_colors(spi);
+	 xTaskCreateStaticPinnedToCore(display_pretty_colors,"LCD Task",LCDTASKSIZE,spi,tskIDLE_PRIORITY+4, xLCDTaskStack,&xLCDTaskBuffer,1);  /* Variable to hold the task's data structure. */
+
 }

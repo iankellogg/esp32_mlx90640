@@ -16,6 +16,6 @@ typedef float thermal_image_t[24*32];
 typedef thermal_color_t thermal_color_image_t[24*32];
 
  void thermal_init();
- void thermal_getframe(thermal_image_t image);
+uint32_t thermal_getframe(thermal_image_t img,uint32_t frameNum);
  float thermal_getTempAtPoint(uint32_t x, uint32_t y);
  void thermal_colorImage(thermal_image_t image, thermal_color_image_t colorImage);

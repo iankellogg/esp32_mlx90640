@@ -5,10 +5,29 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <time.h>    
+#include "freertos/FreeRTOS.h"
+#include <freeRTOS/semphr.h>
+#include <freeRTOS/task.h>
 #include <limits.h>
+#include <esp_err.h>
+#include <esp_log.h>
 #include <string.h>
+#include <math.h>
 
-#define FPS 16
+
+typedef enum
+{
+    MLX90640_FPS_0_5 = 0,
+    MLX90640_FPS_1 = 1,
+    MLX90640_FPS_2 = 2,
+    MLX90640_FPS_4 = 3,
+    MLX90640_FPS_8 = 4,
+    MLX90640_FPS_16 = 5,
+    MLX90640_FPS_32 = 6,
+    MLX90640_FPS_64 = 7,
+
+} mlx90640_fps_t;
+#define FPS MLX90640_FPS_32
 #define FRAME_TIME_MICROS (1000000/FPS)
 
 // Despite the framerate being ostensibly FPS hz
@@ -24,6 +43,7 @@
 // 3 for 270
 #define MLX90640_ROTATION 1
 
+volatile uint32_t FrameCount=0;
 
 
     paramsMLX90640 mlx90640;
@@ -38,11 +58,16 @@ thermal_image_t image;
 
 void thermalCameraTask(void *param);
 
-void thermal_getframe(thermal_image_t img)
+uint32_t thermal_getframe(thermal_image_t img,uint32_t frameNum)
 {
+    if (frameNum==FrameCount)
+    {
+        return FrameCount;
+    }
         xSemaphoreTake(mlx90640_mutex,portMAX_DELAY);
     memcpy(img,image,sizeof(thermal_image_t));
         xSemaphoreGive(mlx90640_mutex);
+        return FrameCount;
 }
 
 float thermal_getTempAtPoint(uint32_t x, uint32_t y)
@@ -130,10 +155,11 @@ StackType_t xMLX90640TaskStack[ MLX90640TASKSIZE ];
 
 void thermal_init()
 {
-
+    ESP_LOGD(__func__,"Start Init");
     //MLX90640_SetDeviceMode(MLX_I2C_ADDR, 0);
     //MLX90640_SetSubPageRepeat(MLX_I2C_ADDR, 0);
-    MLX90640_SetRefreshRate(MLX_I2C_ADDR, 1<<(FPS-1));
+    MLX90640_SetRefreshRate(MLX_I2C_ADDR,FPS);
+    printf("Refresh Rate: %d\r\n",MLX90640_GetRefreshRate(MLX_I2C_ADDR));
     MLX90640_SetChessMode(MLX_I2C_ADDR);
 
     uint16_t eeMLX90640[832];
@@ -144,7 +170,7 @@ void thermal_init()
 	mlx90640_mutex = xSemaphoreCreateMutexStatic( &xMutexBuffer );
     configASSERT( mlx90640_mutex );
 
-	MLX90640Thread = xTaskCreateStatic(thermalCameraTask,"MLX90640 Task",MLX90640TASKSIZE,NULL,tskIDLE_PRIORITY+4, xMLX90640TaskStack,&xMLX90640TaskBuffer,0);  /* Variable to hold the task's data structure. */
+	MLX90640Thread = xTaskCreateStatic(thermalCameraTask,"MLX90640 Task",MLX90640TASKSIZE,NULL,tskIDLE_PRIORITY+4, xMLX90640TaskStack,&xMLX90640TaskBuffer);  /* Variable to hold the task's data structure. */
 
 }
 
@@ -152,16 +178,14 @@ void thermal_init()
 
 void thermalCameraTask(void *param)
 {
-    
-    static uint16_t eeMLX90640[832];
     float emissivity = 1;
     uint16_t frame[834];
     float mlx90640To[768];
     float eTa;
-    int32_t frame_time = (FRAME_TIME_MICROS);
-    
+    int32_t frame_time = (FRAME_TIME_MICROS)/1000;
     while(1){
        // uint64_t start = micros();
+        //printf("Thermal Frame %d\r\n",FrameCount);
         MLX90640_GetFrameData(MLX_I2C_ADDR, frame);
 
         eTa = MLX90640_GetTa(frame, &mlx90640);
@@ -171,8 +195,14 @@ void thermalCameraTask(void *param)
         MLX90640_BadPixelsCorrection((&mlx90640)->outlierPixels, mlx90640To, 1, &mlx90640);
        // printf("Time to i2c: %d\r\n",(uint32_t)(micros()-start));
 
-        xSemaphoreTake(mlx90640_mutex,portMAX_DELAY);
+        if (xSemaphoreTake(mlx90640_mutex,20)==pdFALSE)
+        {
+            ESP_LOGE(__func__,"Mutex Timeout");
+            continue;
+        }
         memcpy(image,mlx90640To,sizeof(image));
+        FrameCount++;
         xSemaphoreGive(mlx90640_mutex);
+        //vTaskDelay(frame_time/portTICK_PERIOD_MS);
     }
 }

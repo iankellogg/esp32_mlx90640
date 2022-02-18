@@ -1,3 +1,3 @@
 [submodule "mlx90640"]
-	path = mlx90640
+	path = main/mlx90640
 	url = https://github.com/iankellogg/mlx90640.git
